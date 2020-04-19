@@ -15,6 +15,9 @@
 // will retain 5% of haze to preserve depth information in dehazed image
 #define HAZE_RETENTION 0.05
 
+// minimum transmission to reduce noise and preserve some haze
+#define MIN_TRANSMISSION 0.1
+
 // store rgba as floats for precise math
 typedef struct {
     float r;
@@ -51,10 +54,10 @@ image_t *init_image(unsigned int height, unsigned int width, unsigned char *byte
     }
 
     for (i = 0; i < 4 * height * width; i += 4) {
-        pixel.r = bytes[i];
-        pixel.g = bytes[i + 1];
-        pixel.b = bytes[i + 2];
-        pixel.a = bytes[i + 3];
+        pixel.r = (float) bytes[i];
+        pixel.g = (float) bytes[i + 1];
+        pixel.b = (float) bytes[i + 2];
+        pixel.a = (float) bytes[i + 3];
 
         pixels[i / 4] = pixel;
     }
@@ -80,7 +83,7 @@ image_t *replace_pixels(image_t *image, pixel_t *pixels) {
     return new_image;
 }
 
-// free an image
+// frees an image
 void free_image(image_t *image) {
     free(image->pixels);
     free(image);
@@ -105,7 +108,7 @@ image_t *read_image(char *filename) {
     return image;
 }
 
-// convert all pixels into a single array in rgba format
+// converts all pixels into a single array in rgba format
 unsigned char *collapse_pixels(image_t *image) {
     unsigned int i, index;
     unsigned char *bytes;
@@ -118,13 +121,13 @@ unsigned char *collapse_pixels(image_t *image) {
     // index of next byte
     index = 0;
     for (i = 0; i < image->height * image->width; i++) {
-        bytes[index] = image->pixels[i].r;
+        bytes[index] = (unsigned char) image->pixels[i].r;
         index++;
-        bytes[index] = image->pixels[i].g;
+        bytes[index] = (unsigned char) image->pixels[i].g;
         index++;
-        bytes[index] = image->pixels[i].b;
+        bytes[index] = (unsigned char) image->pixels[i].b;
         index++;
-        bytes[index] = image->pixels[i].a;
+        bytes[index] = (unsigned char) image->pixels[i].a;
         index++;
     }
 
@@ -204,7 +207,7 @@ pixel_t *compute_dark_channel(image_t *image) {
 }
 
 // finds the num_pixels brightest pixels in the dark channel and returns their indices
-unsigned int *find_brightest_pixels(unsigned int num_pixels, image_t *image, pixel_t *dark_channel) {
+unsigned int *find_brightest_pixels(unsigned int num_pixels, unsigned int height, unsigned int width, pixel_t *dark_channel) {
     float min;
     unsigned int len;
     unsigned int min_index;
@@ -221,7 +224,7 @@ unsigned int *find_brightest_pixels(unsigned int num_pixels, image_t *image, pix
     len = 0;
     min_index = 0;
     min = dark_channel[min_index].r;
-    for (i = 0; i < image->height * image->width; i++) {
+    for (i = 0; i < height * width; i++) {
         pixel = dark_channel[i];
 
         // populate indices
@@ -276,11 +279,11 @@ unsigned int find_brightest_pixel(unsigned int *indices, unsigned int num_pixels
         }
     }
 
-    return max_index;
+    return indices[max_index];
 }
 
-// estimates atmospheric light by finding the brightest pixel in the haze opaque region
-void estimate_atmospheric_light(pixel_t *atmos_light, image_t *image, pixel_t *dark_channel) {
+// computes an estimate of atmospheric light by finding the brightest pixel in the haze opaque region
+void compute_atmospheric_light(pixel_t *atmos_light, image_t *image, pixel_t *dark_channel) {
     unsigned int num_pixels;
     unsigned int index;
     unsigned int *indices;
@@ -289,7 +292,7 @@ void estimate_atmospheric_light(pixel_t *atmos_light, image_t *image, pixel_t *d
     num_pixels = image->height * image->width * HAZE_OPAQUE_SIZE;
 
     // find pixels in the haze opaque region
-    indices = find_brightest_pixels(num_pixels, image, dark_channel);
+    indices = find_brightest_pixels(num_pixels, image->height, image->width, dark_channel);
     if (!indices) {
         return;
     }
@@ -332,6 +335,7 @@ pixel_t *compute_norm_dark_channel(image_t *image, pixel_t *atmos_light) {
     return norm_dark_channel;
 }
 
+// computes the transmission in the image with respect to the atmospheric light
 pixel_t *compute_transmission(image_t *image, pixel_t *atmos_light) {
     float temp;
     unsigned int i;
@@ -346,12 +350,13 @@ pixel_t *compute_transmission(image_t *image, pixel_t *atmos_light) {
         return NULL;
     }
 
+    // compute transmission for each pixel
     for (i = 0; i < image->height * image->width; i++) {
         temp = 1 - (1 - HAZE_RETENTION) * norm_dark_channel[i].r;
 
-        transmission[i].r = temp * 255;
-        transmission[i].g = temp * 255;
-        transmission[i].b = temp * 255;
+        transmission[i].r = temp;
+        transmission[i].g = temp;
+        transmission[i].b = temp;
         transmission[i].a = norm_dark_channel[i].a;
     }
 
@@ -360,12 +365,51 @@ pixel_t *compute_transmission(image_t *image, pixel_t *atmos_light) {
     return transmission;
 }
 
+// TODO unimplemented
+// computes soft matting and returns a copy of smoothened transmission
+pixel_t *compute_soft_matting(unsigned int height, unsigned int width, pixel_t *transmission) {
+    /* pixel_t *soft_matting; */
+
+    /* soft_matting = calloc(height * width, sizeof(pixel_t)); */
+    /* if (!soft_matting) { */
+    /*     return NULL; */
+    /* } */
+
+    return transmission;
+}
+
+// computes scene radiance from original hazy image
+pixel_t *compute_scene_radiance(image_t *image, pixel_t *atmos_light, pixel_t *soft_matting) {
+    unsigned int i;
+    pixel_t pixel;
+    pixel_t *scene_radiance;
+
+    scene_radiance = calloc(image->height * image->width, sizeof(pixel_t));
+    if (!scene_radiance) {
+        return NULL;
+    }
+
+    // compute radiance at each pixel
+    for (i = 0; i < image->height * image->width; i++) {
+        pixel = image->pixels[i];
+
+        scene_radiance[i].r = (pixel.r - atmos_light->r) / MAX(soft_matting[i].r, MIN_TRANSMISSION) + atmos_light->r;
+        scene_radiance[i].g = (pixel.g - atmos_light->g) / MAX(soft_matting[i].g, MIN_TRANSMISSION) + atmos_light->g;
+        scene_radiance[i].b = (pixel.b - atmos_light->b) / MAX(soft_matting[i].b, MIN_TRANSMISSION) + atmos_light->b;
+        scene_radiance[i].a = pixel.a;
+    }
+
+    return scene_radiance;
+}
+
 // returns a new image after haze removal
 image_t *remove_haze(image_t *image) {
     pixel_t atmos_light;
     pixel_t *dark_channel;
     pixel_t *transmission;
-    image_t *new_image;
+    pixel_t *soft_matting;
+    pixel_t *scene_radiance;
+    image_t *dehazed_image;
 
     dark_channel = compute_dark_channel(image);
     if (!dark_channel) {
@@ -374,7 +418,7 @@ image_t *remove_haze(image_t *image) {
     }
 
     atmos_light.a = 0;
-    estimate_atmospheric_light(&atmos_light, image, dark_channel);
+    compute_atmospheric_light(&atmos_light, image, dark_channel);
     if (!atmos_light.a) {
         fprintf(stderr, "Error estimating atmospheric light\n");
         free(dark_channel);
@@ -388,12 +432,23 @@ image_t *remove_haze(image_t *image) {
         return NULL;
     }
 
-    new_image = replace_pixels(image, transmission);
+    soft_matting = compute_soft_matting(image->height, image->width, transmission);
+    if (!soft_matting) {
+        fprintf(stderr, "Error computing soft matting\n");
+        free(dark_channel);
+        free(transmission);
+        return NULL;
+    }
+
+    scene_radiance = compute_scene_radiance(image, &atmos_light, soft_matting);
+
+    dehazed_image = replace_pixels(image, scene_radiance);
 
     free(dark_channel);
     /* free(transmission); */
+    free(soft_matting);
 
-    return new_image;
+    return dehazed_image;
 }
 
 int main(int argc, char **argv) {
