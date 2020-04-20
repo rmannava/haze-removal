@@ -6,8 +6,11 @@
 #define MIN(X, Y) (((X) < (Y)) ? (X) : (Y))
 #define MAX(X, Y) (((X) > (Y)) ? (X) : (Y))
 
-// patch for dark channel and transmission
-#define PATCH_SIZE 15
+// patch size for dark channel and transmission
+// higher patch size will improve dark channel accuracy but introduce depth artifacts
+#define DARK_CHANNEL_PATCH_SIZE 15
+// lower patch size will tighten constant transmission assumption but oversaturate colors
+#define TRANSMISSION_PATCH_SIZE 15
 
 // fraction of image size for haze-opaque region
 #define HAZE_OPAQUE_SIZE 0.001
@@ -15,8 +18,14 @@
 // will retain 5% of haze to preserve depth information in dehazed image
 #define HAZE_RETENTION 0.05
 
-// minimum transmission to reduce noise and preserve some haze
+// minimum transmission to reduce noise visibility
 #define MIN_TRANSMISSION 0.1
+
+// window size for transmission smoothing
+#define WINDOW_SIZE 3
+
+// lower threshold for pixel variance will increase edges in smooth transmission
+#define EDGE_VARIANCE 1
 
 // store rgba as floats for precise math
 typedef struct {
@@ -30,7 +39,6 @@ typedef struct {
 typedef struct {
     unsigned int height;
     unsigned int width;
-    // height * width pixels
     pixel_t *pixels;
 } image_t;
 
@@ -154,22 +162,22 @@ void write_image(image_t *image, char *filename) {
 }
 
 // returns the min value across the rgb channels for all pixels in the patch centered at (y, x)
-float find_patch_min(int y, int x, unsigned int height, unsigned int width, pixel_t *pixels) {
+float find_patch_min(int y, int x, image_t *image, int patch_size) {
     float min;
     unsigned int y_min, y_max, x_min, x_max;
     unsigned int i, j;
     pixel_t pixel;
 
-    y_min = MAX(0, y - PATCH_SIZE / 2);
-    x_min = MAX(0, x - PATCH_SIZE / 2);
-    y_max = MIN(height, y + PATCH_SIZE / 2);
-    x_max = MIN(width, x + PATCH_SIZE / 2);
+    y_min = MAX(0, y - patch_size / 2);
+    x_min = MAX(0, x - patch_size / 2);
+    y_max = MIN(image->height, y + patch_size / 2 + 1);
+    x_max = MIN(image->width, x + patch_size / 2 + 1);
 
     // min across patch
-    min = pixels[y_min * width + x_min].r;
+    min = image->pixels[y_min * image->width + x_min].r;
     for (i = y_min; i < y_max; i++) {
         for (j = x_min; j < x_max; j++) {
-            pixel = pixels[i * width + j];
+            pixel = image->pixels[i * image->width + j];
             min = MIN(min, MIN(pixel.r, MIN(pixel.g, pixel.b)));
         }
     }
@@ -179,7 +187,7 @@ float find_patch_min(int y, int x, unsigned int height, unsigned int width, pixe
 }
 
 // computes the pixels for the dark channel of the image
-pixel_t *compute_dark_channel(image_t *image) {
+pixel_t *compute_dark_channel(image_t *image, int patch_size) {
     float min;
     unsigned int i, j;
     pixel_t pixel;
@@ -192,7 +200,7 @@ pixel_t *compute_dark_channel(image_t *image) {
 
     for (i = 0; i < image->height; i++) {
         for(j = 0; j < image->width; j++) {
-            min = find_patch_min(i, j, image->height, image->width, image->pixels);
+            min = find_patch_min(i, j, image, patch_size);
 
             pixel.r = min;
             pixel.g = min;
@@ -305,7 +313,7 @@ void compute_atmospheric_light(pixel_t *atmos_light, image_t *image, pixel_t *da
 }
 
 // computes the pixels for the dark channel of the image normalized for atmospheric light
-pixel_t *compute_norm_dark_channel(image_t *image, pixel_t *atmos_light) {
+pixel_t *compute_norm_dark_channel(image_t *image, pixel_t *atmos_light, int patch_size) {
     unsigned int i;
     pixel_t pixel;
     pixel_t *norm_pixels;
@@ -328,7 +336,7 @@ pixel_t *compute_norm_dark_channel(image_t *image, pixel_t *atmos_light) {
     }
     norm_image = replace_pixels(image, norm_pixels);
 
-    norm_dark_channel = compute_dark_channel(norm_image);
+    norm_dark_channel = compute_dark_channel(norm_image, patch_size);
 
     free_image(norm_image);
 
@@ -342,7 +350,7 @@ pixel_t *compute_transmission(image_t *image, pixel_t *atmos_light) {
     pixel_t *norm_dark_channel;
     pixel_t *transmission;
 
-    norm_dark_channel = compute_norm_dark_channel(image, atmos_light);
+    norm_dark_channel = compute_norm_dark_channel(image, atmos_light, TRANSMISSION_PATCH_SIZE);
 
     transmission = calloc(image->height * image->width, sizeof(pixel_t));
     if (!transmission) {
@@ -365,21 +373,193 @@ pixel_t *compute_transmission(image_t *image, pixel_t *atmos_light) {
     return transmission;
 }
 
-// TODO unimplemented
-// computes soft matting and returns a copy of smoothened transmission
-pixel_t *compute_soft_matting(unsigned int height, unsigned int width, pixel_t *transmission) {
-    /* pixel_t *soft_matting; */
+// counts the number of pixels in the windoww
+unsigned int count_window_pixels(int y, int x, unsigned int height, unsigned int width, int window_size) {
+    unsigned int y_min, y_max, x_min, x_max;
 
-    /* soft_matting = calloc(height * width, sizeof(pixel_t)); */
-    /* if (!soft_matting) { */
-    /*     return NULL; */
-    /* } */
+    y_min = MAX(0, y - window_size / 2);
+    x_min = MAX(0, x - window_size / 2);
+    y_max = MIN(height, y + window_size / 2 + 1);
+    x_max = MIN(width, x + window_size / 2 + 1);
 
-    return transmission;
+    return (y_max - y_min) * (x_max - x_min);
+}
+
+// computes the mean for the rgb color channels across the pixels in the window
+void compute_window_mean(pixel_t *mean, int y, int x, pixel_t *pixels, unsigned int height, unsigned int width, int window_size) {
+    unsigned int y_min, y_max, x_min, x_max;
+    unsigned int i, j;
+    unsigned int num_pixels;
+    pixel_t pixel;
+
+    y_min = MAX(0, y - window_size / 2);
+    x_min = MAX(0, x - window_size / 2);
+    y_max = MIN(height, y + window_size / 2 + 1);
+    x_max = MIN(width, x + window_size / 2 + 1);
+
+    mean->r = 0;
+    mean->g = 0;
+    mean->b = 0;
+    for (i = y_min; i < y_max; i++) {
+        for (j = x_min; j < x_max; j++) {
+            pixel = pixels[i * width + j];
+
+            mean->r += pixel.r;
+            mean->g += pixel.g;
+            mean->b += pixel.b;
+            mean->a = pixel.a;
+        }
+    }
+
+    num_pixels = count_window_pixels(y, x, height, width, window_size);
+
+    mean->r /= num_pixels;
+    mean->g /= num_pixels;
+    mean->b /= num_pixels;
+}
+
+// computes the variance for the rgb color channels across the pixels in the window
+void compute_window_variance(pixel_t *mean, pixel_t *variance, int y, int x, pixel_t *pixels, unsigned int height, unsigned int width, int window_size) {
+    unsigned int y_min, y_max, x_min, x_max;
+    unsigned int i, j;
+    unsigned int num_pixels;
+    pixel_t pixel;
+
+    y_min = MAX(0, y - window_size / 2);
+    x_min = MAX(0, x - window_size / 2);
+    y_max = MIN(height, y + window_size / 2 + 1);
+    x_max = MIN(width, x + window_size / 2 + 1);
+
+    variance->r = 0;
+    variance->g = 0;
+    variance->b = 0;
+    for (i = y_min; i < y_max; i++) {
+        for (j = x_min; j < x_max; j++) {
+            pixel = pixels[i * width + j];
+
+            variance->r += (pixel.r - mean->r) * (pixel.r - mean->r);
+            variance->g += (pixel.g - mean->g) * (pixel.g - mean->g);
+            variance->b += (pixel.b - mean->b) * (pixel.b - mean->b);
+            variance->a = pixel.a;
+        }
+    }
+
+    num_pixels = count_window_pixels(y, x, height, width, window_size);
+
+    variance->r /= (num_pixels - 1);
+    variance->g /= (num_pixels - 1);
+    variance->b /= (num_pixels - 1);
+}
+
+// computes the dot product for a window across two sets of pixels
+void compute_window_dot_product(pixel_t *dot_product, int y, int x, pixel_t *pixels_X, pixel_t *pixels_Y, unsigned int height, unsigned int width, int window_size) {
+    unsigned int y_min, y_max, x_min, x_max;
+    unsigned int i, j;
+    pixel_t pixel_x, pixel_y;
+
+    y_min = MAX(0, y - window_size / 2);
+    x_min = MAX(0, x - window_size / 2);
+    y_max = MIN(height, y + window_size / 2 + 1);
+    x_max = MIN(width, x + window_size / 2 + 1);
+
+    dot_product->r = 0;
+    dot_product->g = 0;
+    dot_product->b = 0;
+    for (i = y_min; i < y_max; i++) {
+        for (j = x_min; j < x_max; j++) {
+            pixel_x = pixels_X[i * width + j];
+            pixel_y = pixels_Y[i * width + j];
+
+            dot_product->r += pixel_x.r * pixel_y.r;
+            dot_product->g += pixel_x.g * pixel_y.g;
+            dot_product->b += pixel_x.b * pixel_y.b;
+            dot_product->a = pixel_x.a;
+        }
+    }
+}
+
+// updates smooth transmission pixels in the window in place
+void update_smooth_transmission(int y, int x, pixel_t *smooth_transmission, pixel_t *a, pixel_t *b, image_t *image, int window_size) {
+    unsigned int y_min, y_max, x_min, x_max;
+    unsigned int i, j;
+    pixel_t pixel_image, pixel_transmission;
+
+    y_min = MAX(0, y - window_size / 2);
+    x_min = MAX(0, x - window_size / 2);
+    y_max = MIN(image->height, y + window_size / 2 + 1);
+    x_max = MIN(image->width, x + window_size / 2 + 1);
+
+    for (i = y_min; i < y_max; i++) {
+        for (j = x_min; j < x_max; j++) {
+            pixel_transmission = smooth_transmission[i * image->width + j];
+            pixel_image = image->pixels[i * image->width + j];
+
+            pixel_transmission.r += a->r * pixel_image.r + b->r;
+            pixel_transmission.g += a->g * pixel_image.g + b->g;
+            pixel_transmission.b += a->b * pixel_image.b + b->b;
+            pixel_transmission.a = pixel_image.a;
+
+            smooth_transmission[i * image->width + j] = pixel_transmission;
+        }
+    }
+}
+
+// computes a smooth transmission by reducing blockiness and introducing edges from original image
+pixel_t *compute_smooth_transmission(image_t *image, pixel_t *transmission, int window_size) {
+    unsigned int i, j;
+    unsigned int num_pixels;
+    pixel_t a, b;
+    pixel_t image_mean, transmission_mean, image_variance, dot_product;
+    pixel_t pixel;
+    pixel_t *smooth_transmission;
+
+    smooth_transmission = calloc(image->height * image->width, sizeof(pixel_t));
+    if (!smooth_transmission) {
+        return NULL;
+    }
+
+    // compute smooth transmission pixels in each window
+    for (i = 0; i < image->height; i++) {
+        for (j = 0; j < image->width; j++) {
+            compute_window_mean(&image_mean, i, j, image->pixels, image->height, image->width, window_size);
+            compute_window_mean(&transmission_mean, i, j, transmission, image->height, image->width, window_size);
+            compute_window_variance(&image_mean, &image_variance, i, j, image->pixels, image->height, image->width, window_size);
+            compute_window_dot_product(&dot_product, i, j, image->pixels, transmission, image->height, image->width, window_size);
+            num_pixels = count_window_pixels(i, j, image->height, image->width, window_size);
+
+            // compute a
+            a.r = ((dot_product.r / num_pixels) - (image_mean.r * transmission_mean.r)) / (image_variance.r + EDGE_VARIANCE);
+            a.g = ((dot_product.g / num_pixels) - (image_mean.g * transmission_mean.g)) / (image_variance.g + EDGE_VARIANCE);
+            a.b = ((dot_product.b / num_pixels) - (image_mean.b * transmission_mean.b)) / (image_variance.b + EDGE_VARIANCE);
+
+            // compute b
+            b.r = transmission_mean.r - a.r * image_mean.r;
+            b.g = transmission_mean.g - a.g * image_mean.g;
+            b.b = transmission_mean.b - a.b * image_mean.b;
+
+            update_smooth_transmission(i, j, smooth_transmission, &a, &b, image, window_size);
+        }
+    }
+
+    // normalize smooth transmission pixels
+    for (i = 0; i < image->height; i++) {
+        for (j = 0; j < image->width; j++) {
+            pixel = smooth_transmission[i * image->width + j];
+            num_pixels = count_window_pixels(i, j, image->height, image->width, window_size);
+
+            pixel.r /= num_pixels;
+            pixel.g /= num_pixels;
+            pixel.b /= num_pixels;
+
+            smooth_transmission[i * image->width + j] = pixel;
+        }
+    }
+
+    return smooth_transmission;
 }
 
 // computes scene radiance from original hazy image
-pixel_t *compute_scene_radiance(image_t *image, pixel_t *atmos_light, pixel_t *soft_matting) {
+pixel_t *compute_scene_radiance(image_t *image, pixel_t *atmos_light, pixel_t *transmission) {
     unsigned int i;
     pixel_t pixel;
     pixel_t *scene_radiance;
@@ -393,9 +573,9 @@ pixel_t *compute_scene_radiance(image_t *image, pixel_t *atmos_light, pixel_t *s
     for (i = 0; i < image->height * image->width; i++) {
         pixel = image->pixels[i];
 
-        scene_radiance[i].r = (pixel.r - atmos_light->r) / MAX(soft_matting[i].r, MIN_TRANSMISSION) + atmos_light->r;
-        scene_radiance[i].g = (pixel.g - atmos_light->g) / MAX(soft_matting[i].g, MIN_TRANSMISSION) + atmos_light->g;
-        scene_radiance[i].b = (pixel.b - atmos_light->b) / MAX(soft_matting[i].b, MIN_TRANSMISSION) + atmos_light->b;
+        scene_radiance[i].r = (pixel.r - atmos_light->r) / MAX(transmission[i].r, MIN_TRANSMISSION) + atmos_light->r;
+        scene_radiance[i].g = (pixel.g - atmos_light->g) / MAX(transmission[i].g, MIN_TRANSMISSION) + atmos_light->g;
+        scene_radiance[i].b = (pixel.b - atmos_light->b) / MAX(transmission[i].b, MIN_TRANSMISSION) + atmos_light->b;
         scene_radiance[i].a = pixel.a;
     }
 
@@ -407,11 +587,11 @@ image_t *remove_haze(image_t *image) {
     pixel_t atmos_light;
     pixel_t *dark_channel;
     pixel_t *transmission;
-    pixel_t *soft_matting;
+    pixel_t *smooth_transmission;
     pixel_t *scene_radiance;
     image_t *dehazed_image;
 
-    dark_channel = compute_dark_channel(image);
+    dark_channel = compute_dark_channel(image, DARK_CHANNEL_PATCH_SIZE);
     if (!dark_channel) {
         fprintf(stderr, "Error computing dark channel\n");
         return NULL;
@@ -432,25 +612,26 @@ image_t *remove_haze(image_t *image) {
         return NULL;
     }
 
-    soft_matting = compute_soft_matting(image->height, image->width, transmission);
-    if (!soft_matting) {
-        fprintf(stderr, "Error computing soft matting\n");
+    smooth_transmission = compute_smooth_transmission(image, transmission, WINDOW_SIZE);
+    if (!smooth_transmission) {
+        fprintf(stderr, "Error computing smooth transmission\n");
         free(dark_channel);
         free(transmission);
         return NULL;
     }
 
-    scene_radiance = compute_scene_radiance(image, &atmos_light, soft_matting);
+    scene_radiance = compute_scene_radiance(image, &atmos_light, smooth_transmission);
 
     dehazed_image = replace_pixels(image, scene_radiance);
 
     free(dark_channel);
-    /* free(transmission); */
-    free(soft_matting);
+    free(transmission);
+    free(smooth_transmission);
 
     return dehazed_image;
 }
 
+// reads image, removes haze, writes resultant image
 int main(int argc, char **argv) {
     int opt;
     char *input;
