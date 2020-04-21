@@ -3,5 +3,4 @@
 haze_removal_seq
 haze_removal_cuda
 
-seq_objs
-cuda_objs
+objs

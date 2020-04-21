@@ -5,13 +5,15 @@ SEQ_BIN=haze_removal_seq
 CUDA_BIN=haze_removal_cuda
 
 INPUT_DIR=input
-OUTPUT_DIR=output
+SEQ_OUTPUT_DIR=seq_output
+CUDA_OUTPUT_DIR=cuda_output
 
 TIME_STRING="Computation Time"
 TIME_UNIT="seconds"
 
 function haze_removal {
     BIN="$1"
+    OUTPUT_DIR="$2"
     TOTAL_TIME=0
     # sum computation time for every picture in input
     for INFILE in "$INPUT_DIR"/*.png;
@@ -41,7 +43,7 @@ make > /dev/null
 if [[ -f "$SEQ_BIN" ]]
 then
     echo "Sequential Haze Removal"
-    haze_removal "$SEQ_BIN"
+    haze_removal "$SEQ_BIN" "$SEQ_OUTPUT_DIR"
     TOTAL_SEQ_TIME=$TOTAL_TIME
 else
     echo "$SEQ_BIN not found"
@@ -50,7 +52,7 @@ fi
 if [[ -f "$CUDA_BIN" ]]
 then
     echo "CUDA Haze Removal"
-    haze_removal "$CUDA_BIN"
+    haze_removal "$CUDA_BIN" "$CUDA_OUTPUT_DIR"
     TOTAL_CUDA_TIME=$TOTAL_TIME
 else
     echo "$CUDA_BIN not found"

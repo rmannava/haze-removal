@@ -1,32 +1,30 @@
+LIB_DIR = lib
+LIB_FILES = $(wildcard $(LIB_DIR)/*.c)
+
+OBJ_DIR = objs
+
 SEQ_BIN = haze_removal_seq
 SEQ_DIR = seq
-SEQ_FILES = $(SEQ_DIR)/main.c
-SEQ_OBJDIR = seq_objs
-SEQ_OBJS = $(SEQ_OBJDIR)/main.o $(SEQ_OBJDIR)/$(LIBDIR)/lodepng.o
+SEQ_FILES = $(wildcard $(SEQ_DIR)/*.c)
+SEQ_OBJS = $(patsubst %.c, $(OBJ_DIR)/%.o, $(SEQ_FILES)) $(patsubst %.c, $(OBJ_DIR)/%.o, $(LIB_FILES))
 
 CC = gcc
-CFLAGS = -g -Wall -Werror
-
-LIBDIR = lib
-LIBFILES = $(LIBDIR)/lodepng.c
+CFLAGS = -O3 -Wall -Werror
 
 .PHONY: all
 
 all: dirs $(SEQ_BIN)
 
 dirs:
-	mkdir -p $(SEQ_OBJDIR)
-	mkdir -p $(SEQ_OBJDIR)/$(LIBDIR)
+	mkdir -p $(OBJ_DIR)/$(LIB_DIR)
+	mkdir -p $(OBJ_DIR)/$(SEQ_DIR)
 
-$(SEQ_OBJDIR)/%.o: $(SEQ_DIR)/%.c
-	$(CC) -c -o $@ $< $(CFLAGS)
-
-$(SEQ_OBJDIR)/$(LIBDIR)/%.o: $(LIBDIR)/%.c
+$(OBJ_DIR)/%.o: %.c
 	$(CC) -c -o $@ $< $(CFLAGS)
 
 $(SEQ_BIN): $(SEQ_OBJS)
 	$(CC) -o $(SEQ_BIN) $(SEQ_OBJS)
 
 clean:
-	rm -rf $(SEQ_OBJDIR)
+	rm -rf $(OBJ_DIR)
 	rm -f $(SEQ_BIN)
