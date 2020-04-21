@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <getopt.h>
+#include <time.h>
 #include "../lib/lodepng.h"
 
 #define MIN(X, Y) (((X) < (Y)) ? (X) : (Y))
@@ -633,10 +634,11 @@ image_t *remove_haze(image_t *image) {
 
 // reads image, removes haze, writes resultant image
 int main(int argc, char **argv) {
-    int opt;
     char *input;
     char *output;
     char *usage = "Usage: %s -i <input_filename> -o <output_filename>\n";
+    int opt;
+    clock_t start_time, end_time;
     image_t *image;
     image_t *new_image;
 
@@ -680,7 +682,9 @@ int main(int argc, char **argv) {
 
     fprintf(stdout, "Parsed %ux%u image\n", image->width, image->height);
 
+    start_time = clock();
     new_image = remove_haze(image);
+    end_time = clock();
     if (!new_image) {
         free_image(image);
         return 1;
@@ -689,6 +693,8 @@ int main(int argc, char **argv) {
     fprintf(stdout, "Writing Image to %s\n", output); 
 
     write_image(new_image, output);
+
+    fprintf(stdout, "\nComputation Time: %.3f seconds\n", ((float) end_time - start_time) / CLOCKS_PER_SEC);
 
     free_image(image);
     free_image(new_image);

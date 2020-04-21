@@ -28,5 +28,5 @@ $(SEQ_BIN): $(SEQ_OBJS)
 	$(CC) -o $(SEQ_BIN) $(SEQ_OBJS)
 
 clean:
-	rm -r $(SEQ_OBJDIR)
-	rm $(SEQ_BIN)
+	rm -rf $(SEQ_OBJDIR)
+	rm -f $(SEQ_BIN)
