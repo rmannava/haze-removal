@@ -18,7 +18,7 @@ CUDA_FILES = $(wildcard $(CUDA_DIR)/*.cu) $(wildcard $(CUDA_LIB_DIR)/*.cu)
 CUDA_OBJS = $(patsubst %.cu, $(OBJ_DIR)/%.o, $(CUDA_FILES))
 
 NVCC = nvcc
-NVCCFLAGS = -O3 -arch=sm_30
+NVCCFLAGS = -O3 -arch=sm_30 -dc
 
 .PHONY: all dirs clean
 

@@ -1,10 +1,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "lib/lodepng.h"
-#include "image.h"
+#include "image.cuh"
 
 // creates an image and converts from rgba bytes into pixels
-image_t *init_image(unsigned int height, unsigned int width, unsigned char *bytes) {
+__host__ image_t *init_image(unsigned int height, unsigned int width, unsigned char *bytes) {
     unsigned int i;
     pixel_t pixel;
 
@@ -37,13 +37,13 @@ image_t *init_image(unsigned int height, unsigned int width, unsigned char *byte
 }
 
 // frees an image
-void free_image(image_t *image) {
+__host__ void free_image(image_t *image) {
     free(image->pixels);
     free(image);
 }
 
 // reads an image from file
-image_t *read_image(char *filename) {
+__host__ image_t *read_image(char *filename) {
     unsigned int error;
     unsigned int height, width;
     unsigned char *bytes;
@@ -62,7 +62,7 @@ image_t *read_image(char *filename) {
 }
 
 // writes the image to file
-void write_image(image_t *image, char *filename) {
+__host__ void write_image(image_t *image, char *filename) {
     unsigned int error;
     unsigned char *bytes;
 
@@ -81,7 +81,7 @@ void write_image(image_t *image, char *filename) {
 }
 
 // returns a copy of the image after replacing pixels
-image_t *replace_pixels(image_t *image, pixel_t *pixels) {
+__host__ image_t *replace_pixels(image_t *image, pixel_t *pixels) {
     image_t *new_image;
     
     new_image = (image_t *) malloc(sizeof(image_t));
@@ -97,7 +97,7 @@ image_t *replace_pixels(image_t *image, pixel_t *pixels) {
 }
 
 // converts all pixels into a single array in rgba format
-unsigned char *collapse_pixels(image_t *image) {
+__host__ unsigned char *collapse_pixels(image_t *image) {
     unsigned int i, index;
     unsigned char *bytes;
 
@@ -123,12 +123,12 @@ unsigned char *collapse_pixels(image_t *image) {
 }
 
 // returns the mean of the pixel rgb values
-float pixel_intensity(pixel_t *pixel) {
+inline float pixel_intensity(pixel_t *pixel) {
     return (pixel->r + pixel->g + pixel->b) / 3;
 }
 
 // finds the num_pixels brightest pixels in the given set and returns their indices
-unsigned int *find_brightest_pixels(unsigned int num_pixels, unsigned int height, unsigned int width, pixel_t *dark_channel) {
+__host__ unsigned int *find_brightest_pixels(unsigned int num_pixels, unsigned int height, unsigned int width, pixel_t *dark_channel) {
     float min;
     unsigned int len;
     unsigned int min_index;
@@ -179,7 +179,7 @@ unsigned int *find_brightest_pixels(unsigned int num_pixels, unsigned int height
 }
 
 // finds the brightest pixel in the image from the set of indices
-unsigned int find_brightest_pixel(unsigned int *indices, unsigned int num_pixels, image_t *image) {
+__host__ unsigned int find_brightest_pixel(unsigned int *indices, unsigned int num_pixels, image_t *image) {
     float max;
     float temp;
     unsigned int i;

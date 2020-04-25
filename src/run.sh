@@ -36,9 +36,34 @@ function haze_removal {
     echo "$TOTAL_TIME" $TIME_UNIT | awk '{printf "\nTotal Time: %.3f %s\n\n", $1, $2}'
 }
 
+if [[ "$1" == "help" ]]
+then
+    echo "Usage: ./$0 [help] [seq] [cuda]"
+    echo ""
+    echo "help:    shows this message"
+    echo "seq:     runs sequential haze removal"
+    echo "cuda:    runs cuda haze removal"
+    echo "default: runs seq and cuda and computes speedup"
+    exit
+fi
+
 # only show user errors
 make clean > /dev/null
 make > /dev/null
+
+if [[ "$1" == "seq" ]]
+then
+    echo "Sequential Haze Removal"
+    haze_removal "$SEQ_BIN" "$SEQ_OUTPUT_DIR"
+    exit
+fi
+
+if [[ "$1" == "cuda" ]]
+then
+    echo "CUDA Haze Removal"
+    haze_removal "$CUDA_BIN" "$CUDA_OUTPUT_DIR"
+    exit
+fi
 
 if [[ -f "$SEQ_BIN" ]]
 then

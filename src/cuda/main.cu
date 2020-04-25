@@ -13,10 +13,10 @@
 
 #ifndef IMAGE_H
 #define IMAGE_H
-#include "image.h"
+#include "image.cuh"
 #endif
 
-#include "window.h"
+#include "window.cuh"
 
 // higher window radius will improve dark channel accuracy but increase halo size
 #define DARK_CHANNEL_WINDOW_RADIUS 5
@@ -39,6 +39,28 @@
 // lower threshold for pixel variance will increase smoothness of smooth transmission
 #define EDGE_VARIANCE 0.001
 
+// check cuda function
+#define CHECK_ERROR(error) check_error(error, __LINE__)
+
+// check most recent cuda function
+#define CHECK_LAST_ERROR() check_last_error(__LINE__)
+
+// 1024 threads per block
+#define THREAD_LIMIT 1024
+
+// exits if there was an error
+inline void check_error(cudaError_t error, int line) {
+    if (error != cudaSuccess) {
+        fprintf(stderr, "\nCUDA Error at line %d: %s\n", line, cudaGetErrorString(error));
+        exit(1);
+    }
+}
+
+// exits if there was an error
+inline void check_last_error(int line) {
+    check_error(cudaGetLastError(), line);
+}
+
 // store transmission smoothing filter information
 typedef struct {
     pixel_t a;
@@ -46,35 +68,30 @@ typedef struct {
 } filter_elem_t;
 
 // computes the pixels for the dark channel of the image
-pixel_t *compute_dark_channel(image_t *image, int window_radius) {
+__global__ void compute_dark_channel(pixel_t *dark_channel, pixel_t *image_pixels, unsigned int height, unsigned int width, int window_radius) {
     float min;
-    unsigned int i, j;
+    unsigned int index;
     pixel_t pixel;
-    pixel_t *dark_channel;
 
-    dark_channel = (pixel_t *) calloc(image->height * image->width, sizeof(pixel_t));
-    if (!dark_channel) {
-        return NULL;
+    index = blockIdx.x * blockDim.x + threadIdx.x;
+
+    // check if this thread represents a valid pixel
+    if (index >= height * width) {
+        return;
     }
 
-    for (i = 0; i < image->height; i++) {
-        for(j = 0; j < image->width; j++) {
-            min = find_window_min(i, j, image, window_radius);
+    min = find_window_min(index, image_pixels, height, width, window_radius);
 
-            pixel.r = min;
-            pixel.g = min;
-            pixel.b = min;
-            pixel.a = PIXEL_MAX_VALUE;
+    pixel.r = min;
+    pixel.g = min;
+    pixel.b = min;
+    pixel.a = PIXEL_MAX_VALUE;
 
-            dark_channel[i * image->width + j] = pixel;
-        }
-    }
-
-    return dark_channel;
+    dark_channel[index] = pixel;
 }
 
 // computes an estimate of atmospheric light by finding the brightest pixel in the haze opaque region
-void compute_atmospheric_light(pixel_t *atmos_light, image_t *image, pixel_t *dark_channel) {
+__host__ void compute_atmospheric_light(pixel_t *atmos_light, image_t *image, pixel_t *dark_channel) {
     unsigned int num_pixels;
     unsigned int index;
     unsigned int *indices;
@@ -95,72 +112,15 @@ void compute_atmospheric_light(pixel_t *atmos_light, image_t *image, pixel_t *da
     free(indices);
 }
 
-// computes the pixels for the dark channel of the image normalized for atmospheric light
-pixel_t *compute_norm_dark_channel(image_t *image, pixel_t *atmos_light, int window_radius) {
-    unsigned int i;
-    pixel_t pixel;
-    pixel_t *norm_pixels;
-    pixel_t *norm_dark_channel;
-    image_t *norm_image;
-
-    norm_pixels = (pixel_t *) calloc(image->height * image->width, sizeof(pixel_t));
-    if (!norm_pixels) {
-        return NULL;
-    }
-
-    // normalize all pixels
-    for (i = 0; i < image->height * image->width; i++) {
-        pixel = image->pixels[i];
-
-        norm_pixels[i].r = pixel.r / atmos_light->r;
-        norm_pixels[i].g = pixel.g / atmos_light->g;
-        norm_pixels[i].b = pixel.b / atmos_light->b;
-        norm_pixels[i].a = PIXEL_MAX_VALUE;
-    }
-    norm_image = replace_pixels(image, norm_pixels);
-
-    norm_dark_channel = compute_dark_channel(norm_image, window_radius);
-
-    free_image(norm_image);
-
-    return norm_dark_channel;
-}
-
-// computes the transmission in the image with respect to the atmospheric light
-pixel_t *compute_transmission(image_t *image, pixel_t *atmos_light) {
-    float temp;
-    unsigned int i;
-    pixel_t *norm_dark_channel;
-    pixel_t *transmission;
-
-    norm_dark_channel = compute_norm_dark_channel(image, atmos_light, TRANSMISSION_WINDOW_RADIUS);
-
-    transmission = (pixel_t *) calloc(image->height * image->width, sizeof(pixel_t));
-    if (!transmission) {
-        free(norm_dark_channel);
-        return NULL;
-    }
-
-    // compute transmission for each pixel
-    for (i = 0; i < image->height * image->width; i++) {
-        temp = 1 - (1 - HAZE_RETENTION) * norm_dark_channel[i].r;
-
-        transmission[i].r = temp;
-        transmission[i].g = temp;
-        transmission[i].b = temp;
-        transmission[i].a = PIXEL_MAX_VALUE;
-    }
-
-    free(norm_dark_channel);
-
-    return transmission;
-}
-
 // updates filter elements in the window in place
-void update_filter_window(int y, int x, filter_elem_t *filter, filter_elem_t *filter_elem, unsigned int height, unsigned int width, int window_radius) {
+__device__ void update_filter_window(filter_elem_t *filter, filter_elem_t *filter_elem, unsigned int index, unsigned int height, unsigned int width, int window_radius) {
+    int y, x;
     unsigned int y_min, y_max, x_min, x_max;
     unsigned int i, j;
-    filter_elem_t temp;
+    unsigned int filter_index;
+
+    y = index / width;
+    x = index % width;
 
     y_min = MAX(0, y - window_radius);
     x_min = MAX(0, x - window_radius);
@@ -169,169 +129,276 @@ void update_filter_window(int y, int x, filter_elem_t *filter, filter_elem_t *fi
 
     for (i = y_min; i < y_max; i++) {
         for (j = x_min; j < x_max; j++) {
-            temp = filter[i * width + j];
+            filter_index = i * width + j;
 
-            temp.a.r += filter_elem->a.r;
-            temp.a.g += filter_elem->a.g;
-            temp.a.b += filter_elem->a.b;
-            temp.a.a = PIXEL_MAX_VALUE;
+            atomicAdd(&filter[filter_index].a.r, filter_elem->a.r);
+            atomicAdd(&filter[filter_index].a.g, filter_elem->a.g);
+            atomicAdd(&filter[filter_index].a.b, filter_elem->a.b);
+            filter[filter_index].a.a = PIXEL_MAX_VALUE;
 
-            temp.b.r += filter_elem->b.r;
-            temp.b.g += filter_elem->b.g;
-            temp.b.b += filter_elem->b.b;
-            temp.b.a = PIXEL_MAX_VALUE;
-
-            filter[i * width + j] = temp;
+            atomicAdd(&filter[filter_index].b.r, filter_elem->b.r);
+            atomicAdd(&filter[filter_index].b.g, filter_elem->b.g);
+            atomicAdd(&filter[filter_index].b.b, filter_elem->b.b);
+            filter[filter_index].b.a = PIXEL_MAX_VALUE;
         }
     }
 }
 
-// computes a smooth transmission by reducing blockiness and introducing edges from original image
-pixel_t *compute_smooth_transmission(image_t *image, pixel_t *transmission, int window_size) {
-    unsigned int i, j;
+// computes the image normalized by the atmospheric light
+__global__ void compute_norm(pixel_t *norm_pixels, pixel_t *image_pixels, unsigned int height, unsigned int width, pixel_t atmos_light) {
+    unsigned int index;
+    pixel_t image_pixel, transmission_pixel;
+
+    index = blockIdx.x * blockDim.x + threadIdx.x;
+
+    // check if this thread represents a valid pixel
+    if (index >= height * width) {
+        return;
+    }
+
+    // normalize pixels
+    image_pixel = image_pixels[index];
+
+    transmission_pixel.r = image_pixel.r / atmos_light.r;
+    transmission_pixel.g = image_pixel.g / atmos_light.g;
+    transmission_pixel.b = image_pixel.b / atmos_light.b;
+    transmission_pixel.a = PIXEL_MAX_VALUE;
+
+    norm_pixels[index] = transmission_pixel;
+}
+
+// computes the transmission in the image with the norm image dark channel
+__global__ void compute_transmission(pixel_t *transmission_pixels, pixel_t *norm_pixels, unsigned int height, unsigned int width, int dark_channel_window_radius) {
+    float min, transmission;
+    unsigned int index;
+    pixel_t transmission_pixel;
+
+    index = blockIdx.x * blockDim.x + threadIdx.x;
+
+    // check if this thread represents a valid pixel
+    if (index >= height * width) {
+        return;
+    }
+
+    // compute norm dark channel pixel value
+    min = find_window_min(index, norm_pixels, height, width, dark_channel_window_radius);
+
+    // compute transmission pixel value
+    transmission = 1 - (1 - HAZE_RETENTION) * min;
+
+    transmission_pixel.r = transmission;
+    transmission_pixel.g = transmission;
+    transmission_pixel.b = transmission;
+    transmission_pixel.a = PIXEL_MAX_VALUE;
+
+    transmission_pixels[index] = transmission_pixel;
+}
+
+// computes guided filter using original image
+__global__ void compute_filter(filter_elem_t *filter, pixel_t *image_pixels, pixel_t *transmission_pixels, unsigned int height, unsigned int width, int smooth_window_radius) {
+    unsigned int index;
     unsigned int num_pixels;
     pixel_t image_mean, transmission_mean, image_variance, dot_product;
-    pixel_t pixel, transmission_pixel;
-    pixel_t *smooth_transmission;
     filter_elem_t filter_elem;
-    filter_elem_t *filter;
 
-    filter = (filter_elem_t *) calloc(image->height * image->width, sizeof(filter_elem_t));
-    if (!filter) {
-        return NULL;
+    index = blockIdx.x * blockDim.x + threadIdx.x;
+
+    // check if this thread represents a valid pixel
+    if (index >= height * width) {
+        return;
     }
 
-    smooth_transmission = (pixel_t *) calloc(image->height * image->width, sizeof(pixel_t));
-    if (!smooth_transmission) {
-        free(filter);
-        return NULL;
-    }
+    // compute window stats
+    compute_window_mean(&image_mean, index, image_pixels, height, width, smooth_window_radius);
+    compute_window_mean(&transmission_mean, index, transmission_pixels, height, width, smooth_window_radius);
+    compute_window_variance(&image_variance, &image_mean, index, image_pixels, height, width, smooth_window_radius);
+    compute_window_dot_product(&dot_product, index, image_pixels, transmission_pixels, height, width, smooth_window_radius);
+    num_pixels = count_window_pixels(index, height, width, smooth_window_radius);
 
-    // compute filter coefficients for all pixels in each window
-    for (i = 0; i < image->height; i++) {
-        for (j = 0; j < image->width; j++) {
-            compute_window_mean(&image_mean, i, j, image->pixels, image->height, image->width, window_size);
-            compute_window_mean(&transmission_mean, i, j, transmission, image->height, image->width, window_size);
-            compute_window_variance(&image_mean, &image_variance, i, j, image->pixels, image->height, image->width, window_size);
-            compute_window_dot_product(&dot_product, i, j, image->pixels, transmission, image->height, image->width, window_size);
-            num_pixels = count_window_pixels(i, j, image->height, image->width, window_size);
+    // compute a
+    filter_elem.a.r = ((dot_product.r / num_pixels) - (image_mean.r * transmission_mean.r)) / (image_variance.r + EDGE_VARIANCE);
+    filter_elem.a.g = ((dot_product.g / num_pixels) - (image_mean.g * transmission_mean.g)) / (image_variance.g + EDGE_VARIANCE);
+    filter_elem.a.b = ((dot_product.b / num_pixels) - (image_mean.b * transmission_mean.b)) / (image_variance.b + EDGE_VARIANCE);
 
-            // compute a
-            filter_elem.a.r = ((dot_product.r / num_pixels) - (image_mean.r * transmission_mean.r)) / (image_variance.r + EDGE_VARIANCE);
-            filter_elem.a.g = ((dot_product.g / num_pixels) - (image_mean.g * transmission_mean.g)) / (image_variance.g + EDGE_VARIANCE);
-            filter_elem.a.b = ((dot_product.b / num_pixels) - (image_mean.b * transmission_mean.b)) / (image_variance.b + EDGE_VARIANCE);
+    // compute b
+    filter_elem.b.r = transmission_mean.r - filter_elem.a.r * image_mean.r;
+    filter_elem.b.g = transmission_mean.g - filter_elem.a.g * image_mean.g;
+    filter_elem.b.b = transmission_mean.b - filter_elem.a.b * image_mean.b;
 
-            // compute b
-            filter_elem.b.r = transmission_mean.r - filter_elem.a.r * image_mean.r;
-            filter_elem.b.g = transmission_mean.g - filter_elem.a.g * image_mean.g;
-            filter_elem.b.b = transmission_mean.b - filter_elem.a.b * image_mean.b;
-
-            update_filter_window(i, j, filter, &filter_elem, image->height, image->width, window_size);
-        }
-    }
-
-    // calculate smooth transmission pixels from filter
-    for (i = 0; i < image->height; i++) {
-        for (j = 0; j < image->width; j++) {
-            pixel = image->pixels[i * image->width + j];
-            transmission_pixel = smooth_transmission[i * image->width + j];
-            filter_elem = filter[i * image->width + j];
-            num_pixels = count_window_pixels(i, j, image->height, image->width, window_size);
-
-            transmission_pixel.r = (filter_elem.a.r / num_pixels) * pixel.r + (filter_elem.b.r / num_pixels);
-            transmission_pixel.b = (filter_elem.a.b / num_pixels) * pixel.b + (filter_elem.b.b / num_pixels);
-            transmission_pixel.g = (filter_elem.a.g / num_pixels) * pixel.g + (filter_elem.b.g / num_pixels);
-            transmission_pixel.a = PIXEL_MAX_VALUE;
-
-            smooth_transmission[i * image->width + j] = transmission_pixel;
-        }
-    }
-
-    free(filter);
-
-    return smooth_transmission;
+    // compute filter coefficients
+    update_filter_window(filter, &filter_elem, index, height, width, smooth_window_radius);
 }
 
-// computes scene radiance from original hazy image
-pixel_t *compute_scene_radiance(image_t *image, pixel_t *atmos_light, pixel_t *transmission) {
-    unsigned int i;
-    pixel_t pixel;
-    pixel_t *scene_radiance;
+// computes smooth transmission by applying guided filter to transmission
+__global__ void compute_smooth_transmission(pixel_t *transmission_pixels, pixel_t *image_pixels, filter_elem_t *filter, unsigned int height, unsigned int width, int smooth_window_radius) {
+    unsigned int index;
+    unsigned int num_pixels;
+    pixel_t image_pixel, transmission_pixel;
+    filter_elem_t filter_elem;
 
-    scene_radiance = (pixel_t *) calloc(image->height * image->width, sizeof(pixel_t));
-    if (!scene_radiance) {
-        return NULL;
+    index = blockIdx.x * blockDim.x + threadIdx.x;
+
+    // check if this thread represents a valid pixel
+    if (index >= height * width) {
+        return;
     }
 
-    // compute radiance at each pixel
-    for (i = 0; i < image->height * image->width; i++) {
-        pixel = image->pixels[i];
+    // compute smooth transmission pixel value
+    image_pixel = image_pixels[index];
+    filter_elem = filter[index];
+    num_pixels = count_window_pixels(index, height, width, smooth_window_radius);
 
-        // use abs to suppress artifacts - does a good job of hiding the problem if artifacts are rare
-        scene_radiance[i].r = fabs((pixel.r - atmos_light->r) / MAX(transmission[i].r, MIN_TRANSMISSION) + atmos_light->r);
-        scene_radiance[i].g = fabs((pixel.g - atmos_light->g) / MAX(transmission[i].g, MIN_TRANSMISSION) + atmos_light->g);
-        scene_radiance[i].b = fabs((pixel.b - atmos_light->b) / MAX(transmission[i].b, MIN_TRANSMISSION) + atmos_light->b);
-        scene_radiance[i].a = PIXEL_MAX_VALUE;
+    transmission_pixel.r = (filter_elem.a.r / num_pixels) * image_pixel.r + (filter_elem.b.r / num_pixels);
+    transmission_pixel.b = (filter_elem.a.b / num_pixels) * image_pixel.b + (filter_elem.b.b / num_pixels);
+    transmission_pixel.g = (filter_elem.a.g / num_pixels) * image_pixel.g + (filter_elem.b.g / num_pixels);
+    transmission_pixel.a = PIXEL_MAX_VALUE;
+
+    transmission_pixels[index] = transmission_pixel;
+}
+
+// computes scene radiance from atmospheric light and smooth transmission
+__global__ void compute_scene_radiance(pixel_t *scene_radiance, pixel_t *image_pixels, unsigned int height, unsigned int width, pixel_t atmos_light, pixel_t *transmission_pixels) {
+    unsigned int index;
+    pixel_t pixel, image_pixel;
+
+    index = blockIdx.x * blockDim.x + threadIdx.x;
+
+    // check if this thread represents a valid pixel
+    if (index >= height * width) {
+        return;
     }
 
-    return scene_radiance;
+    // compute radiance
+    image_pixel = image_pixels[index];
+
+    // use abs to suppress artifacts - does a good job of hiding the problem if artifacts are rare
+    pixel.r = fabs((image_pixel.r - atmos_light.r) / MAX(transmission_pixels[index].r, MIN_TRANSMISSION) + atmos_light.r);
+    pixel.g = fabs((image_pixel.g - atmos_light.g) / MAX(transmission_pixels[index].g, MIN_TRANSMISSION) + atmos_light.g);
+    pixel.b = fabs((image_pixel.b - atmos_light.b) / MAX(transmission_pixels[index].b, MIN_TRANSMISSION) + atmos_light.b);
+    pixel.a = PIXEL_MAX_VALUE;
+
+    scene_radiance[index] = pixel;
 }
 
 // returns a new image after haze removal
-image_t *remove_haze(image_t *image) {
+__host__ image_t *remove_haze(image_t *image) {
+    unsigned int num_blocks;
     pixel_t atmos_light;
     pixel_t *dark_channel;
-    pixel_t *transmission;
-    pixel_t *smooth_transmission;
     pixel_t *scene_radiance;
+    pixel_t *device_image_pixels;
+    pixel_t *device_dark_channel;
+    pixel_t *device_norm;
+    pixel_t *device_transmission;
+    pixel_t *device_scene_radiance;
+    filter_elem_t *device_filter;
     image_t *dehazed_image;
 
+    // divide by THREAD_LIMIT and round up
+    num_blocks = (image->height * image->width + THREAD_LIMIT - 1) / THREAD_LIMIT;
+
+    CHECK_ERROR(cudaMalloc(&device_image_pixels, image->height * image->width * sizeof(pixel_t)));
+    CHECK_ERROR(cudaMemcpy(device_image_pixels, (void *) image->pixels, image->height * image->width * sizeof(pixel_t), cudaMemcpyHostToDevice));
+
+    CHECK_ERROR(cudaMalloc(&device_dark_channel, image->height * image->width * sizeof(pixel_t)));
+    CHECK_ERROR(cudaMemset(device_dark_channel, 0, image->height * image->width * sizeof(pixel_t)));
+
+    CHECK_ERROR(cudaMalloc(&device_norm, image->height * image->width * sizeof(pixel_t)));
+    CHECK_ERROR(cudaMemset(device_norm, 0, image->height * image->width * sizeof(pixel_t)));
+
+    CHECK_ERROR(cudaMalloc(&device_transmission, image->height * image->width * sizeof(pixel_t)));
+    CHECK_ERROR(cudaMemset(device_transmission, 0, image->height * image->width * sizeof(pixel_t)));
+
+    CHECK_ERROR(cudaMalloc(&device_scene_radiance, image->height * image->width * sizeof(pixel_t)));
+    CHECK_ERROR(cudaMemset(device_scene_radiance, 0, image->height * image->width * sizeof(pixel_t)));
+
+    CHECK_ERROR(cudaMalloc(&device_filter, image->height * image->width * sizeof(filter_elem_t)));
+    CHECK_ERROR(cudaMemset(device_filter, 0, image->height * image->width * sizeof(filter_elem_t)));
+
     fprintf(stdout, "Computing dark channel...");
-    dark_channel = compute_dark_channel(image, DARK_CHANNEL_WINDOW_RADIUS);
-    fprintf(stdout, "done\n");
+
+    compute_dark_channel <<<num_blocks, THREAD_LIMIT, 0>>> (device_dark_channel, device_image_pixels, image->height, image->width, DARK_CHANNEL_WINDOW_RADIUS);
+
+    cudaDeviceSynchronize();
+    CHECK_LAST_ERROR();
+
+    dark_channel = (pixel_t *) calloc(image->height * image->width, sizeof(pixel_t));
     if (!dark_channel) {
-        fprintf(stderr, "Error computing dark channel\n");
         return NULL;
     }
+
+    CHECK_ERROR(cudaMemcpy(dark_channel, device_dark_channel, image->height * image->width * sizeof(pixel_t), cudaMemcpyDeviceToHost));
+
+    fprintf(stdout, "done\n");
+
+    fprintf(stdout, "Computing atmospheric light...");
 
     atmos_light.a = 0;
-    fprintf(stdout, "Computing atmospheric light...");
     compute_atmospheric_light(&atmos_light, image, dark_channel);
-    fprintf(stdout, "done\n");
     if (!atmos_light.a) {
-        fprintf(stderr, "Error estimating atmospheric light\n");
+        fprintf(stderr, "\nError estimating atmospheric light\n");
         free(dark_channel);
         return NULL;
     }
+
+    fprintf(stdout, "done\n");
 
     fprintf(stdout, "Computing transmission...");
-    transmission = compute_transmission(image, &atmos_light);
+
+    compute_norm <<<num_blocks, THREAD_LIMIT, 0>>> (device_norm, device_image_pixels, image->height, image->width, atmos_light);
+
+    cudaDeviceSynchronize();
+    CHECK_LAST_ERROR();
+
+    compute_transmission <<<num_blocks, THREAD_LIMIT, 0>>> (device_transmission, device_norm, image->height, image->width, DARK_CHANNEL_WINDOW_RADIUS);
+
+    cudaDeviceSynchronize();
+    CHECK_LAST_ERROR();
+
+    compute_filter <<<num_blocks, THREAD_LIMIT, 0>>> (device_filter, device_image_pixels, device_transmission, image->height, image->width, SMOOTH_WINDOW_RADIUS);
+
+    cudaDeviceSynchronize();
+    CHECK_LAST_ERROR();
+
     fprintf(stdout, "done\n");
-    if (!transmission) {
-        fprintf(stderr, "Error computing transmission\n");
-        free(dark_channel);
-        return NULL;
-    }
 
     fprintf(stdout, "Smoothing transmission...");
-    smooth_transmission = compute_smooth_transmission(image, transmission, SMOOTH_WINDOW_RADIUS);
+
+    compute_smooth_transmission <<<num_blocks, THREAD_LIMIT, 0>>> (device_transmission, device_image_pixels, device_filter, image->height, image->width, SMOOTH_WINDOW_RADIUS);
+
+    cudaDeviceSynchronize();
+    CHECK_LAST_ERROR();
+
     fprintf(stdout, "done\n");
-    if (!smooth_transmission) {
-        fprintf(stderr, "Error computing smooth transmission\n");
+
+    fprintf(stdout, "Computing scene radiance...");
+
+    compute_scene_radiance <<<num_blocks, THREAD_LIMIT, 0>>> (device_scene_radiance, device_image_pixels, image->height, image->width, atmos_light, device_transmission);
+
+    cudaDeviceSynchronize();
+    CHECK_LAST_ERROR();
+
+    scene_radiance = (pixel_t *) calloc(image->height * image->width, sizeof(pixel_t));
+    if (!scene_radiance) {
+        fprintf(stderr, "\nError computing scene radiance transmission\n");
         free(dark_channel);
-        free(transmission);
         return NULL;
     }
 
-    fprintf(stdout, "Computing scene radiance...");
-    scene_radiance = compute_scene_radiance(image, &atmos_light, smooth_transmission);
+    CHECK_ERROR(cudaMemcpy(scene_radiance, device_scene_radiance, image->height * image->width * sizeof(pixel_t), cudaMemcpyDeviceToHost));
+
     fprintf(stdout, "done\n");
 
     dehazed_image = replace_pixels(image, scene_radiance);
 
     free(dark_channel);
-    free(transmission);
-    free(smooth_transmission);
+
+    CHECK_ERROR(cudaFree(device_image_pixels));
+    CHECK_ERROR(cudaFree(device_dark_channel));
+    CHECK_ERROR(cudaFree(device_norm));
+    CHECK_ERROR(cudaFree(device_transmission));
+    CHECK_ERROR(cudaFree(device_scene_radiance));
+    CHECK_ERROR(cudaFree(device_filter));
 
     return dehazed_image;
 }
@@ -380,7 +447,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    fprintf(stdout, "Sequential Haze Removal on %s\n", input);
+    fprintf(stdout, "CUDA Haze Removal on %s\n", input);
 
     image = read_image(input);
     if (!image) {
