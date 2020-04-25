@@ -8,12 +8,12 @@ image_t *init_image(unsigned int height, unsigned int width, unsigned char *byte
     unsigned int i;
     pixel_t pixel;
 
-    image_t *image = malloc(sizeof(image_t));
+    image_t *image = (image_t *) malloc(sizeof(image_t));
     if (!image) {
         return NULL;
     }
 
-    pixel_t *pixels = calloc(height * width, sizeof(pixel_t));
+    pixel_t *pixels = (pixel_t *) calloc(height * width, sizeof(pixel_t));
     if (!pixels) {
         free(image);
         return NULL;
@@ -84,7 +84,7 @@ void write_image(image_t *image, char *filename) {
 image_t *replace_pixels(image_t *image, pixel_t *pixels) {
     image_t *new_image;
     
-    new_image = malloc(sizeof(image_t));
+    new_image = (image_t *) malloc(sizeof(image_t));
     if (!new_image) {
         return NULL;
     }
@@ -101,7 +101,7 @@ unsigned char *collapse_pixels(image_t *image) {
     unsigned int i, index;
     unsigned char *bytes;
 
-    bytes = calloc(4 * image->height * image->width, sizeof(unsigned char));
+    bytes = (unsigned char *) calloc(4 * image->height * image->width, sizeof(unsigned char));
     if (!bytes) {
         return NULL;
     }
@@ -137,7 +137,7 @@ unsigned int *find_brightest_pixels(unsigned int num_pixels, unsigned int height
     pixel_t pixel, temp_pixel;
 
     // indices of pixels in the haze opaque region
-    indices = calloc(num_pixels, sizeof(unsigned int));
+    indices = (unsigned int *) calloc(num_pixels, sizeof(unsigned int));
     if (!indices) {
         return NULL;
     }
