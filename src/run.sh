@@ -4,9 +4,9 @@
 SEQ_BIN=haze_removal_seq
 CUDA_BIN=haze_removal_cuda
 
-INPUT_DIR=input
-SEQ_OUTPUT_DIR=seq_output
-CUDA_OUTPUT_DIR=cuda_output
+INPUT_DIR=../images
+SEQ_OUTPUT_DIR=../seq_results
+CUDA_OUTPUT_DIR=../cuda_results
 
 TIME_STRING="Computation Time"
 TIME_UNIT="seconds"
