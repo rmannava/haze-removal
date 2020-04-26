@@ -10,10 +10,10 @@
 #define MIN(X, Y) (((X) < (Y)) ? (X) : (Y))
 #define MAX(X, Y) (((X) > (Y)) ? (X) : (Y))
 
-// counts the number of pixels in the windoww
+// counts the number of pixels in the window
 __device__ unsigned int count_window_pixels(unsigned int index, unsigned int height, unsigned int width, int window_radius);
 
-// returns the min value across the rgb channels for all pixels in the window centered at (y, x)
+// returns the min value across the rgb channels for all pixels in the window
 __device__ float find_window_min(unsigned int index, pixel_t *image_pixels, unsigned int height, unsigned int width, int window_radius);
 
 // computes the mean for the rgb color channels across the pixels in the window

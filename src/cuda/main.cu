@@ -49,7 +49,7 @@
 #define THREAD_LIMIT 1024
 
 // exits if there was an error
-inline void check_error(cudaError_t error, int line) {
+__host__ inline void check_error(cudaError_t error, int line) {
     if (error != cudaSuccess) {
         fprintf(stderr, "\nCUDA Error at line %d: %s\n", line, cudaGetErrorString(error));
         exit(1);
@@ -57,7 +57,7 @@ inline void check_error(cudaError_t error, int line) {
 }
 
 // exits if there was an error
-inline void check_last_error(int line) {
+__host__ inline void check_last_error(int line) {
     check_error(cudaGetLastError(), line);
 }
 
@@ -67,7 +67,7 @@ typedef struct {
     pixel_t b;
 } filter_elem_t;
 
-// computes the pixels for the dark channel of the image
+// computes the dark channel of the image
 __global__ void compute_dark_channel(pixel_t *dark_channel, pixel_t *image_pixels, unsigned int height, unsigned int width, int window_radius) {
     float min;
     unsigned int index;
@@ -90,7 +90,7 @@ __global__ void compute_dark_channel(pixel_t *dark_channel, pixel_t *image_pixel
     dark_channel[index] = pixel;
 }
 
-// computes an estimate of atmospheric light by finding the brightest pixel in the haze opaque region
+// computes an estimate of the atmospheric light by finding the brightest pixel in the haze opaque region
 __host__ void compute_atmospheric_light(pixel_t *atmos_light, image_t *image, pixel_t *dark_channel) {
     unsigned int num_pixels;
     unsigned int index;
@@ -100,48 +100,16 @@ __host__ void compute_atmospheric_light(pixel_t *atmos_light, image_t *image, pi
     num_pixels = image->height * image->width * HAZE_OPAQUE_RATIO;
 
     // find pixels in the haze opaque region
-    indices = find_brightest_pixels(num_pixels, image->height, image->width, dark_channel);
+    indices = find_brightest_pixels(num_pixels, dark_channel, image->height, image->width);
     if (!indices) {
         return;
     }
 
     // find the brightest pixel from the original image in the haze opaque region
-    index = find_brightest_pixel(indices, num_pixels, image);
+    index = find_brightest_pixel(image, indices, num_pixels);
     *atmos_light = image->pixels[index];
 
     free(indices);
-}
-
-// updates filter elements in the window in place
-__device__ void update_filter_window(filter_elem_t *filter, filter_elem_t *filter_elem, unsigned int index, unsigned int height, unsigned int width, int window_radius) {
-    int y, x;
-    unsigned int y_min, y_max, x_min, x_max;
-    unsigned int i, j;
-    unsigned int filter_index;
-
-    y = index / width;
-    x = index % width;
-
-    y_min = MAX(0, y - window_radius);
-    x_min = MAX(0, x - window_radius);
-    y_max = MIN(height, y + window_radius + 1);
-    x_max = MIN(width, x + window_radius + 1);
-
-    for (i = y_min; i < y_max; i++) {
-        for (j = x_min; j < x_max; j++) {
-            filter_index = i * width + j;
-
-            atomicAdd(&filter[filter_index].a.r, filter_elem->a.r);
-            atomicAdd(&filter[filter_index].a.g, filter_elem->a.g);
-            atomicAdd(&filter[filter_index].a.b, filter_elem->a.b);
-            filter[filter_index].a.a = PIXEL_MAX_VALUE;
-
-            atomicAdd(&filter[filter_index].b.r, filter_elem->b.r);
-            atomicAdd(&filter[filter_index].b.g, filter_elem->b.g);
-            atomicAdd(&filter[filter_index].b.b, filter_elem->b.b);
-            filter[filter_index].b.a = PIXEL_MAX_VALUE;
-        }
-    }
 }
 
 // computes the image normalized by the atmospheric light
@@ -156,7 +124,7 @@ __global__ void compute_norm(pixel_t *norm_pixels, pixel_t *image_pixels, unsign
         return;
     }
 
-    // normalize pixels
+    // normalize pixel
     image_pixel = image_pixels[index];
 
     transmission_pixel.r = image_pixel.r / atmos_light.r;
@@ -194,7 +162,40 @@ __global__ void compute_transmission(pixel_t *transmission_pixels, pixel_t *norm
     transmission_pixels[index] = transmission_pixel;
 }
 
-// computes guided filter using original image
+// updates the filter elements in the window in place
+__device__ void update_filter_window(filter_elem_t *filter, filter_elem_t *filter_elem, unsigned int index, unsigned int height, unsigned int width, int window_radius) {
+    int y, x;
+    unsigned int y_min, y_max, x_min, x_max;
+    unsigned int i, j;
+    unsigned int filter_index;
+
+    y = index / width;
+    x = index % width;
+
+    y_min = MAX(0, y - window_radius);
+    x_min = MAX(0, x - window_radius);
+    y_max = MIN(height, y + window_radius + 1);
+    x_max = MIN(width, x + window_radius + 1);
+
+    // sum filter elements
+    for (i = y_min; i < y_max; i++) {
+        for (j = x_min; j < x_max; j++) {
+            filter_index = i * width + j;
+
+            atomicAdd(&filter[filter_index].a.r, filter_elem->a.r);
+            atomicAdd(&filter[filter_index].a.g, filter_elem->a.g);
+            atomicAdd(&filter[filter_index].a.b, filter_elem->a.b);
+            filter[filter_index].a.a = PIXEL_MAX_VALUE;
+
+            atomicAdd(&filter[filter_index].b.r, filter_elem->b.r);
+            atomicAdd(&filter[filter_index].b.g, filter_elem->b.g);
+            atomicAdd(&filter[filter_index].b.b, filter_elem->b.b);
+            filter[filter_index].b.a = PIXEL_MAX_VALUE;
+        }
+    }
+}
+
+// computes the guided filter using the original image
 __global__ void compute_filter(filter_elem_t *filter, pixel_t *image_pixels, pixel_t *transmission_pixels, unsigned int height, unsigned int width, int smooth_window_radius) {
     unsigned int index;
     unsigned int num_pixels;
@@ -229,7 +230,7 @@ __global__ void compute_filter(filter_elem_t *filter, pixel_t *image_pixels, pix
     update_filter_window(filter, &filter_elem, index, height, width, smooth_window_radius);
 }
 
-// computes smooth transmission by applying guided filter to transmission
+// computes the smooth transmission by applying the guided filter to the transmission
 __global__ void compute_smooth_transmission(pixel_t *transmission_pixels, pixel_t *image_pixels, filter_elem_t *filter, unsigned int height, unsigned int width, int smooth_window_radius) {
     unsigned int index;
     unsigned int num_pixels;
@@ -256,7 +257,7 @@ __global__ void compute_smooth_transmission(pixel_t *transmission_pixels, pixel_
     transmission_pixels[index] = transmission_pixel;
 }
 
-// computes scene radiance from atmospheric light and smooth transmission
+// computes the scene radiance from the atmospheric light and the smooth transmission
 __global__ void compute_scene_radiance(pixel_t *scene_radiance, pixel_t *image_pixels, unsigned int height, unsigned int width, pixel_t atmos_light, pixel_t *transmission_pixels) {
     unsigned int index;
     pixel_t pixel, image_pixel;
@@ -297,6 +298,7 @@ __host__ image_t *remove_haze(image_t *image) {
     // divide by THREAD_LIMIT and round up
     num_blocks = (image->height * image->width + THREAD_LIMIT - 1) / THREAD_LIMIT;
 
+    // initialize all required device memory
     CHECK_ERROR(cudaMalloc(&device_image_pixels, image->height * image->width * sizeof(pixel_t)));
     CHECK_ERROR(cudaMemcpy(device_image_pixels, (void *) image->pixels, image->height * image->width * sizeof(pixel_t), cudaMemcpyHostToDevice));
 
@@ -317,11 +319,14 @@ __host__ image_t *remove_haze(image_t *image) {
 
     fprintf(stdout, "Computing dark channel...");
 
+    // compute dark channel on device
     compute_dark_channel <<<num_blocks, THREAD_LIMIT, 0>>> (device_dark_channel, device_image_pixels, image->height, image->width, DARK_CHANNEL_WINDOW_RADIUS);
 
+    // wait for all blocks
     cudaDeviceSynchronize();
     CHECK_LAST_ERROR();
 
+    // copy dark channel to host
     dark_channel = (pixel_t *) calloc(image->height * image->width, sizeof(pixel_t));
     if (!dark_channel) {
         return NULL;
@@ -333,6 +338,7 @@ __host__ image_t *remove_haze(image_t *image) {
 
     fprintf(stdout, "Computing atmospheric light...");
 
+    // compute atmospheric light on host
     atmos_light.a = 0;
     compute_atmospheric_light(&atmos_light, image, dark_channel);
     if (!atmos_light.a) {
@@ -345,18 +351,17 @@ __host__ image_t *remove_haze(image_t *image) {
 
     fprintf(stdout, "Computing transmission...");
 
+    // compute normalized image on device
     compute_norm <<<num_blocks, THREAD_LIMIT, 0>>> (device_norm, device_image_pixels, image->height, image->width, atmos_light);
 
+    // wait for all blocks
     cudaDeviceSynchronize();
     CHECK_LAST_ERROR();
 
+    // compute transmission on device
     compute_transmission <<<num_blocks, THREAD_LIMIT, 0>>> (device_transmission, device_norm, image->height, image->width, DARK_CHANNEL_WINDOW_RADIUS);
 
-    cudaDeviceSynchronize();
-    CHECK_LAST_ERROR();
-
-    compute_filter <<<num_blocks, THREAD_LIMIT, 0>>> (device_filter, device_image_pixels, device_transmission, image->height, image->width, SMOOTH_WINDOW_RADIUS);
-
+    // wait for all blocks
     cudaDeviceSynchronize();
     CHECK_LAST_ERROR();
 
@@ -364,8 +369,17 @@ __host__ image_t *remove_haze(image_t *image) {
 
     fprintf(stdout, "Smoothing transmission...");
 
+    // compute guided filter on device
+    compute_filter <<<num_blocks, THREAD_LIMIT, 0>>> (device_filter, device_image_pixels, device_transmission, image->height, image->width, SMOOTH_WINDOW_RADIUS);
+
+    // wait for all blocks
+    cudaDeviceSynchronize();
+    CHECK_LAST_ERROR();
+
+    // compute smooth transmission on device
     compute_smooth_transmission <<<num_blocks, THREAD_LIMIT, 0>>> (device_transmission, device_image_pixels, device_filter, image->height, image->width, SMOOTH_WINDOW_RADIUS);
 
+    // wait for all blocks
     cudaDeviceSynchronize();
     CHECK_LAST_ERROR();
 
@@ -373,11 +387,14 @@ __host__ image_t *remove_haze(image_t *image) {
 
     fprintf(stdout, "Computing scene radiance...");
 
+    // compute scene radiance on device
     compute_scene_radiance <<<num_blocks, THREAD_LIMIT, 0>>> (device_scene_radiance, device_image_pixels, image->height, image->width, atmos_light, device_transmission);
 
+    // wait for all blocks
     cudaDeviceSynchronize();
     CHECK_LAST_ERROR();
 
+    // copy scene radiance to host
     scene_radiance = (pixel_t *) calloc(image->height * image->width, sizeof(pixel_t));
     if (!scene_radiance) {
         fprintf(stderr, "\nError computing scene radiance transmission\n");
@@ -389,6 +406,7 @@ __host__ image_t *remove_haze(image_t *image) {
 
     fprintf(stdout, "done\n");
 
+    // construct dehazed image
     dehazed_image = replace_pixels(image, scene_radiance);
 
     free(dark_channel);

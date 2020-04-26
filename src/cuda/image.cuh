@@ -39,10 +39,10 @@ __host__ image_t *replace_pixels(image_t *image, pixel_t *pixels);
 __host__ unsigned char *collapse_pixels(image_t *image);
 
 // returns the mean of the pixel rgb values
-inline float pixel_intensity(pixel_t *pixel);
+__host__ __device__ float pixel_intensity(pixel_t *pixel);
 
 // finds the num_pixels brightest pixels in the given set and returns their indices
-__host__ unsigned int *find_brightest_pixels(unsigned int num_pixels, unsigned int height, unsigned int width, pixel_t *dark_channel);
+__host__ unsigned int *find_brightest_pixels(unsigned int num_pixels, pixel_t *pixels, unsigned int height, unsigned int width);
 
-// finds the brightest pixel in the image from the set of indices
-__host__ unsigned int find_brightest_pixel(unsigned int *indices, unsigned int num_pixels, image_t *image);
+// finds the brightest pixel in the image from the set of indices and returns its index
+__host__ unsigned int find_brightest_pixel(image_t *image, unsigned int *indices, unsigned int num_pixels);

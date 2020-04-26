@@ -5,15 +5,18 @@
 
 // creates an image and converts from rgba bytes into pixels
 __host__ image_t *init_image(unsigned int height, unsigned int width, unsigned char *bytes) {
+    unsigned int num_pixels;
     unsigned int i;
     pixel_t pixel;
+
+    num_pixels = height * width;
 
     image_t *image = (image_t *) malloc(sizeof(image_t));
     if (!image) {
         return NULL;
     }
 
-    pixel_t *pixels = (pixel_t *) calloc(height * width, sizeof(pixel_t));
+    pixel_t *pixels = (pixel_t *) calloc(num_pixels, sizeof(pixel_t));
     if (!pixels) {
         free(image);
         return NULL;
@@ -22,7 +25,7 @@ __host__ image_t *init_image(unsigned int height, unsigned int width, unsigned c
     image->height = height;
     image->width = width;
 
-    for (i = 0; i < 4 * height * width; i += 4) {
+    for (i = 0; i < 4 * num_pixels; i += 4) {
         pixel.r = (float) bytes[i];
         pixel.g = (float) bytes[i + 1];
         pixel.b = (float) bytes[i + 2];
@@ -98,17 +101,19 @@ __host__ image_t *replace_pixels(image_t *image, pixel_t *pixels) {
 
 // converts all pixels into a single array in rgba format
 __host__ unsigned char *collapse_pixels(image_t *image) {
-    unsigned int i, index;
+    unsigned int num_pixels, i, index;
     unsigned char *bytes;
 
-    bytes = (unsigned char *) calloc(4 * image->height * image->width, sizeof(unsigned char));
+    num_pixels = image->height * image->width;
+
+    bytes = (unsigned char *) calloc(4 * num_pixels, sizeof(unsigned char));
     if (!bytes) {
         return NULL;
     }
 
     // index of next byte
     index = 0;
-    for (i = 0; i < image->height * image->width; i++) {
+    for (i = 0; i < num_pixels; i++) {
         bytes[index] = (unsigned char) image->pixels[i].r;
         index++;
         bytes[index] = (unsigned char) image->pixels[i].g;
@@ -123,18 +128,21 @@ __host__ unsigned char *collapse_pixels(image_t *image) {
 }
 
 // returns the mean of the pixel rgb values
-inline float pixel_intensity(pixel_t *pixel) {
+__host__ __device__ float pixel_intensity(pixel_t *pixel) {
     return (pixel->r + pixel->g + pixel->b) / 3;
 }
 
 // finds the num_pixels brightest pixels in the given set and returns their indices
-__host__ unsigned int *find_brightest_pixels(unsigned int num_pixels, unsigned int height, unsigned int width, pixel_t *dark_channel) {
+__host__ unsigned int *find_brightest_pixels(unsigned int num_pixels, pixel_t *pixels, unsigned int height, unsigned int width) {
     float min;
+    unsigned int num_total_pixels;
     unsigned int len;
     unsigned int min_index;
     unsigned int i, j;
     unsigned int *indices;
     pixel_t pixel, temp_pixel;
+
+    num_total_pixels = height * width;
 
     // indices of pixels in the haze opaque region
     indices = (unsigned int *) calloc(num_pixels, sizeof(unsigned int));
@@ -144,9 +152,9 @@ __host__ unsigned int *find_brightest_pixels(unsigned int num_pixels, unsigned i
 
     len = 0;
     min_index = 0;
-    min = dark_channel[min_index].r;
-    for (i = 0; i < height * width; i++) {
-        pixel = dark_channel[i];
+    min = pixels[min_index].r;
+    for (i = 0; i < num_total_pixels; i++) {
+        pixel = pixels[i];
 
         // populate indices
         if (len < num_pixels) {
@@ -165,7 +173,7 @@ __host__ unsigned int *find_brightest_pixels(unsigned int num_pixels, unsigned i
                 
                 // update min
                 for (j = 0; j < num_pixels; j++) {
-                    temp_pixel = dark_channel[indices[j]];
+                    temp_pixel = pixels[indices[j]];
                     if (temp_pixel.r < min) {
                         min_index = j;
                         min = temp_pixel.r;
@@ -178,8 +186,8 @@ __host__ unsigned int *find_brightest_pixels(unsigned int num_pixels, unsigned i
     return indices;
 }
 
-// finds the brightest pixel in the image from the set of indices
-__host__ unsigned int find_brightest_pixel(unsigned int *indices, unsigned int num_pixels, image_t *image) {
+// finds the brightest pixel in the image from the set of indices and returns its index
+__host__ unsigned int find_brightest_pixel(image_t *image, unsigned int *indices, unsigned int num_pixels) {
     float max;
     float temp;
     unsigned int i;

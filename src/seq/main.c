@@ -45,7 +45,7 @@ typedef struct {
     pixel_t b;
 } filter_elem_t;
 
-// computes the pixels for the dark channel of the image
+// computes the dark channel of the image
 pixel_t *compute_dark_channel(image_t *image, int window_radius) {
     float min;
     unsigned int i, j;
@@ -73,7 +73,7 @@ pixel_t *compute_dark_channel(image_t *image, int window_radius) {
     return dark_channel;
 }
 
-// computes an estimate of atmospheric light by finding the brightest pixel in the haze opaque region
+// computes an estimate of the atmospheric light by finding the brightest pixel in the haze opaque region
 void compute_atmospheric_light(pixel_t *atmos_light, image_t *image, pixel_t *dark_channel) {
     unsigned int num_pixels;
     unsigned int index;
@@ -83,13 +83,13 @@ void compute_atmospheric_light(pixel_t *atmos_light, image_t *image, pixel_t *da
     num_pixels = image->height * image->width * HAZE_OPAQUE_RATIO;
 
     // find pixels in the haze opaque region
-    indices = find_brightest_pixels(num_pixels, image->height, image->width, dark_channel);
+    indices = find_brightest_pixels(num_pixels, dark_channel, image->height, image->width);
     if (!indices) {
         return;
     }
 
     // find the brightest pixel from the original image in the haze opaque region
-    index = find_brightest_pixel(indices, num_pixels, image);
+    index = find_brightest_pixel(image, indices, num_pixels);
     *atmos_light = image->pixels[index];
 
     free(indices);
@@ -167,6 +167,7 @@ void update_filter_window(int y, int x, filter_elem_t *filter, filter_elem_t *fi
     y_max = MIN(height, y + window_radius + 1);
     x_max = MIN(width, x + window_radius + 1);
 
+    // sum filter elements
     for (i = y_min; i < y_max; i++) {
         for (j = x_min; j < x_max; j++) {
             temp = filter[i * width + j];
@@ -187,7 +188,7 @@ void update_filter_window(int y, int x, filter_elem_t *filter, filter_elem_t *fi
 }
 
 // computes a smooth transmission by reducing blockiness and introducing edges from original image
-pixel_t *compute_smooth_transmission(image_t *image, pixel_t *transmission, int window_size) {
+pixel_t *compute_smooth_transmission(image_t *image, pixel_t *transmission, int window_radius) {
     unsigned int i, j;
     unsigned int num_pixels;
     pixel_t image_mean, transmission_mean, image_variance, dot_product;
@@ -210,11 +211,11 @@ pixel_t *compute_smooth_transmission(image_t *image, pixel_t *transmission, int 
     // compute filter coefficients for all pixels in each window
     for (i = 0; i < image->height; i++) {
         for (j = 0; j < image->width; j++) {
-            compute_window_mean(&image_mean, i, j, image->pixels, image->height, image->width, window_size);
-            compute_window_mean(&transmission_mean, i, j, transmission, image->height, image->width, window_size);
-            compute_window_variance(&image_mean, &image_variance, i, j, image->pixels, image->height, image->width, window_size);
-            compute_window_dot_product(&dot_product, i, j, image->pixels, transmission, image->height, image->width, window_size);
-            num_pixels = count_window_pixels(i, j, image->height, image->width, window_size);
+            compute_window_mean(&image_mean, i, j, image->pixels, image->height, image->width, window_radius);
+            compute_window_mean(&transmission_mean, i, j, transmission, image->height, image->width, window_radius);
+            compute_window_variance(&image_mean, &image_variance, i, j, image->pixels, image->height, image->width, window_radius);
+            compute_window_dot_product(&dot_product, i, j, image->pixels, transmission, image->height, image->width, window_radius);
+            num_pixels = count_window_pixels(i, j, image->height, image->width, window_radius);
 
             // compute a
             filter_elem.a.r = ((dot_product.r / num_pixels) - (image_mean.r * transmission_mean.r)) / (image_variance.r + EDGE_VARIANCE);
@@ -226,7 +227,7 @@ pixel_t *compute_smooth_transmission(image_t *image, pixel_t *transmission, int 
             filter_elem.b.g = transmission_mean.g - filter_elem.a.g * image_mean.g;
             filter_elem.b.b = transmission_mean.b - filter_elem.a.b * image_mean.b;
 
-            update_filter_window(i, j, filter, &filter_elem, image->height, image->width, window_size);
+            update_filter_window(i, j, filter, &filter_elem, image->height, image->width, window_radius);
         }
     }
 
@@ -236,7 +237,7 @@ pixel_t *compute_smooth_transmission(image_t *image, pixel_t *transmission, int 
             pixel = image->pixels[i * image->width + j];
             transmission_pixel = smooth_transmission[i * image->width + j];
             filter_elem = filter[i * image->width + j];
-            num_pixels = count_window_pixels(i, j, image->height, image->width, window_size);
+            num_pixels = count_window_pixels(i, j, image->height, image->width, window_radius);
 
             transmission_pixel.r = (filter_elem.a.r / num_pixels) * pixel.r + (filter_elem.b.r / num_pixels);
             transmission_pixel.b = (filter_elem.a.b / num_pixels) * pixel.b + (filter_elem.b.b / num_pixels);
@@ -327,6 +328,7 @@ image_t *remove_haze(image_t *image) {
     scene_radiance = compute_scene_radiance(image, &atmos_light, smooth_transmission);
     fprintf(stdout, "done\n");
 
+    // constructs dehazed image
     dehazed_image = replace_pixels(image, scene_radiance);
 
     free(dark_channel);

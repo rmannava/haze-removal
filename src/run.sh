@@ -47,7 +47,7 @@ then
     exit
 fi
 
-# only show user errors
+# only show errors
 make clean > /dev/null
 make > /dev/null
 

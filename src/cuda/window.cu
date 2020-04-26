@@ -1,6 +1,6 @@
 #include "window.cuh"
 
-// counts the number of pixels in the windoww
+// counts the number of pixels in the window
 __device__ unsigned int count_window_pixels(unsigned int index, unsigned int height, unsigned int width, int window_radius) {
     int y, x;
     unsigned int y_min, y_max, x_min, x_max;
@@ -16,7 +16,7 @@ __device__ unsigned int count_window_pixels(unsigned int index, unsigned int hei
     return (y_max - y_min) * (x_max - x_min);
 }
 
-// returns the min value across the rgb channels for all pixels in the window centered at (y, x)
+// returns the min value across the rgb channels for all pixels in the window
 __device__ float find_window_min(unsigned int index, pixel_t *image_pixels, unsigned int height, unsigned int width, int window_radius) {
     float min;
     int y, x;

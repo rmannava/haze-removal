@@ -42,7 +42,7 @@ unsigned char *collapse_pixels(image_t *image);
 float pixel_intensity(pixel_t *pixel);
 
 // finds the num_pixels brightest pixels in the given set and returns their indices
-unsigned int *find_brightest_pixels(unsigned int num_pixels, unsigned int height, unsigned int width, pixel_t *dark_channel);
+unsigned int *find_brightest_pixels(unsigned int num_pixels, pixel_t *pixels, unsigned int height, unsigned int width);
 
-// finds the brightest pixel in the image from the set of indices
-unsigned int find_brightest_pixel(unsigned int *indices, unsigned int num_pixels, image_t *image);
+// finds the brightest pixel in the image from the set of indices and returns its index
+unsigned int find_brightest_pixel(image_t *image, unsigned int *indices, unsigned int num_pixels);

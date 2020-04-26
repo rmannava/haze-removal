@@ -1,6 +1,6 @@
 #include "window.h"
 
-// counts the number of pixels in the windoww
+// counts the number of pixels in the window
 unsigned int count_window_pixels(int y, int x, unsigned int height, unsigned int width, int window_radius) {
     unsigned int y_min, y_max, x_min, x_max;
 
@@ -12,7 +12,7 @@ unsigned int count_window_pixels(int y, int x, unsigned int height, unsigned int
     return (y_max - y_min) * (x_max - x_min);
 }
 
-// returns the min value across the rgb channels for all pixels in the window centered at (y, x)
+// returns the min value across the rgb channels for all pixels in the window
 float find_window_min(int y, int x, image_t *image, int window_radius) {
     float min;
     unsigned int y_min, y_max, x_min, x_max;
